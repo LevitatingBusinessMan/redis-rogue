@@ -11,7 +11,10 @@ Included in this repository is the source of the malicious RedisModule I wrote. 
 
 ### Vulnerable hosts
 For this exploit a host has to run redis with persistence enabled, no authentication. The redis version can't be 6 or higher.
+
 The exploit has been tested on redis 5, and might work on older versions.
+I have seen it error on redis 3, because it seems to reply with `inline commands`.
+
 If the server is running Redis 6 and the configuration reveils the username of the user running it, you might want to give [redis-ssh](https://github.com/LevitatingBusinessMan/redis-ssh) a try instead.
 
 ### TODO

