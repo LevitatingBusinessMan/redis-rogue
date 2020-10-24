@@ -1,4 +1,20 @@
 #!/usr/bin/ruby
+
+puts <<-'EOF'
+____          _ _       ____                        
+|  _ \ ___  __| (_)___  |  _ \ ___   __ _ _   _  ___ 
+| |_) / _ \/ _` | / __| | |_) / _ \ / _` | | | |/ _ \
+|  _ <  __/ (_| | \__ \ |  _ < (_) | (_| | |_| |  __/
+|_| \_\___|\__,_|_|___/ |_| \_\___/ \__, |\__,_|\___|
+                                    |___/            
+
+By Levitating
+https://github.com/LevitatingBusinessMan/redis-rogue
+
+Version 0.0.1
+
+EOF
+
 #Reference: https://2018.zeronights.ru/wp-content/uploads/materials/15-redis-post-exploitation.pdf
 
 require "socket"
@@ -34,7 +50,7 @@ OptionParser.new do |parser|
 
 end.parse!
 
-for arg in [:lport,:lhost,:host]
+for arg in [:host,:lhost,:lport]
 	if !@opts[arg]
 		abort "Missing #{arg}! (--help for usage)"
 	end
