@@ -24,3 +24,7 @@ If the server is running Redis 6 and the configuration reveils the username of t
 * Ability to spawn a shell and accepting it elsewhere
 * Ability to insert the module without running it
 * Ability to specify a module to upload
+
+### References
+* https://2018.zeronights.ru/wp-content/uploads/materials/15-redis-post-exploitation.pdf
+
